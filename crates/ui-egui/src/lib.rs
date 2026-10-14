@@ -61,6 +61,8 @@ pub(crate) mod scratch_reads;
 pub mod state;
 pub mod texel_guard;
 pub mod theme;
+#[cfg(not(target_arch = "wasm32"))]
+mod timelapse;
 pub mod tone;
 pub(crate) mod tool_memory;
 pub mod updates_ui;

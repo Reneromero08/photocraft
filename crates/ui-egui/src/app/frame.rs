@@ -260,6 +260,8 @@ impl PhotocraftApp {
         prefs_ui::show_shortcuts(self, ui);
         crate::dialogs::run(self, ui);
         canvas::extra_windows(self, ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::timelapse::windows(self, &ctx);
         screen_picker::show(self, ui);
         smart_svg_ui::poll(self, &ctx);
         // Esc and the view keys read the window's intents last, once every UI above had its chance at Esc.

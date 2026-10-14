@@ -399,6 +399,10 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if let Some(result) = crate::smart_svg_ui::intercept(app, id, &params) {
         return result;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(r) = crate::timelapse::menu(app, id, &params) {
+        return r;
+    }
     if id == "layer.selectUnderCursor" {
         return select_layer_under_cursor(app, ctx);
     }

@@ -19,6 +19,8 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.panel.dock", "Dock Panel", &[], None),
     ("window.panel.activate", "Activate Panel", &[], None),
     ("window.panel.close", "Close Panel", &[], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    ("window.timelapse", "Timelapse", &["Window"], None),
     ("window.panel.closeGroup", "Close Tab Group", &[], None),
     ("window.panel.closeOthers", "Close Other Panels in Group", &[], None),
     ("window.panel.minimize", "Minimize Panel", &[], None),
