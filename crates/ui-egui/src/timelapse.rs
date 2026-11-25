@@ -1,11 +1,13 @@
 //! Window › Timelapse: records a painting session as numbered JPEG frames and renders them into
 //! a video with ffmpeg.
 //!
-//! - A frame is considered when the document's revision moved and at least the interval has passed
-//!   since the last frame. The worker writes it only when the picture changed: when the layers
-//!   differ from the last frame's (a stroke, a filter, an undo), not for a selection, a guide,
-//!   selecting a layer or showing a reference, and a skipped check doesn't restart the interval.
-//!   It renders a copy of the document with every layer or
+//! - A frame is written for every committed document revision (a stroke, a filter, an undo, a
+//!   layer edit): `tick` polls `DocState::revision` once per UI frame. With the debounce at 0
+//!   (the default) that is one frame per revision. A debounce > 0 waits for that many quiet
+//!   seconds before capturing, so a burst coalesces to its last revision ("when I rest"). At most
+//!   one frame is in flight; revisions that arrive while it renders are coalesced into the next
+//!   capture, so the queue is bounded. The worker renders a copy of the document with every layer
+//!   or
 //!   group whose name starts with the reference prefix (default `REF_`) hidden, so references
 //!   never appear in the video and the real document, its history and its saved state are left
 //!   alone.
@@ -58,8 +60,9 @@ struct SessionFile {
     other: serde_json::Map<String, Value>,
 }
 
+/// 0 = one frame per committed revision (every stroke). >0 = quiet-period debounce in seconds.
 fn default_interval() -> u32 {
-    20
+    0
 }
 
 fn default_tag() -> String {
@@ -109,10 +112,10 @@ struct Recorder {
     last_revision: u64,
     /// What the last frame showed (references hidden), to skip frames that would look the same.
     last_frame: Option<Arc<Document>>,
+    /// Start of the quiet period for the current unrecorded revision; `None` once captured.
     last_capture: Option<Instant>,
-    /// A frame being rendered: its number, the previous frame's time (restored when nothing
-    /// changed) and the worker's result once done.
-    capture: Option<(u32, Option<Instant>, FrameSlot)>,
+    /// The one frame in flight: its number and the worker's result slot.
+    capture: Option<(u32, FrameSlot)>,
     /// An ffmpeg export in progress: its latest status and whether it finished.
     export: Option<Arc<Mutex<(String, bool)>>>,
     /// Settings being edited in the panel (applied to the session on change).
@@ -216,14 +219,14 @@ impl Recorder {
         }
     }
 
-    /// Collect a finished frame, then start the next one when it's due.
+    /// Collect a finished frame, then record the latest revision when its quiet period is over.
     fn tick(&mut self, app: &PhotocraftApp, ctx: &egui::Context, force: bool) {
-        if let Some((n, before, slot)) = &self.capture {
+        if let Some((n, slot)) = &self.capture {
             let done = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
             match done {
                 None => return,
                 Some(result) => {
-                    let (n, before) = (*n, *before);
+                    let n = *n;
                     self.capture = None;
                     match result {
                         Ok(FrameDone::Written(size, frame)) => {
@@ -237,7 +240,9 @@ impl Recorder {
                             }
                             self.log(format!("Captured frame {n}."));
                         }
-                        Ok(FrameDone::Unchanged) => self.last_capture = before,
+                        Ok(FrameDone::Unchanged) => {
+                            // The revision was consumed by the capture; don't trigger it again.
+                        }
                         Err(e) => self.log(format!("Frame {n} failed: {e}")),
                     }
                 }
@@ -253,14 +258,19 @@ impl Recorder {
             self.log("The recorded document was closed; recording stopped.");
             return;
         };
-        let interval = Duration::from_secs(u64::from(session.state.interval_seconds.max(1)));
+        let debounce = Duration::from_secs(u64::from(session.state.interval_seconds));
         if !force {
-            if st.revision == self.last_revision {
+            if st.revision != self.last_revision {
+                // A committed edit: (re)start the quiet timer. Bursts coalesce to the last one.
+                self.last_capture = Some(Instant::now());
+            }
+            let Some(changed_at) = self.last_capture else { return };
+            let waited = changed_at.elapsed();
+            if waited < debounce {
+                ctx.request_repaint_after(debounce.saturating_sub(waited));
                 return;
             }
-            if let Some(wait) = self.last_capture.map(|t| interval.saturating_sub(t.elapsed())).filter(|w| !w.is_zero()) {
-                // Changed, but too soon: look again once the interval is up.
-                ctx.request_repaint_after(wait);
+            if st.revision == self.last_revision {
                 return;
             }
         }
@@ -268,7 +278,7 @@ impl Recorder {
         let path = session.folder.join(frame_name(n));
         let tag = session.state.reference_tag.clone();
         let doc = st.doc.clone();
-        // A forced frame is always written; a timed one only when the picture changed.
+        // A forced frame is always written; a revision-driven one only when the picture changed.
         let previous = if force { None } else { self.last_frame.clone() };
         let slot = Arc::new(Mutex::new(None));
         let shared = slot.clone();
@@ -280,9 +290,9 @@ impl Recorder {
             repaint.request_repaint();
         });
         self.last_revision = st.revision;
-        let before = self.last_capture.replace(Instant::now());
+        self.last_capture = None;
         match spawned {
-            Ok(_) => self.capture = Some((n, before, slot)),
+            Ok(_) => self.capture = Some((n, slot)),
             Err(e) => self.log(format!("Could not start the frame worker: {e}")),
         }
     }
@@ -590,7 +600,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         ui.add_space(6.0);
         crate::widgets::section_label(ui, tl!("Min seconds between frames"));
-        if crate::widgets::value_field(ui, &mut r.interval_edit, 1.0..=3600.0, "s", 80.0).changed() {
+        if crate::widgets::value_field(ui, &mut r.interval_edit, 0.0..=3600.0, "s", 80.0).changed() {
             settings_changed = true;
         }
         crate::widgets::section_label(ui, tl!("Reference layer prefix (not recorded)"));
@@ -624,7 +634,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     if settings_changed {
         let tag = r.tag_edit.trim().to_string();
-        let interval = r.interval_edit.round().clamp(1.0, 3600.0) as u32;
+        let interval = r.interval_edit.round().clamp(0.0, 3600.0) as u32;
         if let Some(s) = &mut r.session {
             s.state.interval_seconds = interval;
             s.state.reference_tag = tag;
