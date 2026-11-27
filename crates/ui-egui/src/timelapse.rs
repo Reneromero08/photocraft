@@ -570,7 +570,7 @@ fn panel_window(
 ) -> bool {
     let _ = app;
     let response = Window::new(title)
-        .id(egui::Id::new(id))
+        .id(egui::Id::unique(id))
         .title_bar(false)
         .default_width(width)
         .show(ctx, |ui| add_contents(ui));
@@ -666,7 +666,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             settings_changed = true;
         }
         section_label(ui, tl!("Reference layer prefix (not recorded)"));
-        if text_field(ui, egui::Id::new("timelapse-ref-tag"), &mut r.tag_edit, "REF_", ui.available_width(), true).changed() {
+        if text_field(ui, egui::Id::unique("timelapse-ref-tag"), &mut r.tag_edit, "REF_", ui.available_width(), true).changed() {
             settings_changed = true;
         }
         ui.add_space(6.0);
@@ -733,7 +733,7 @@ mod tests {
     use super::*;
 
     fn named(name: &str, visible: bool) -> Layer {
-        let mut l = Layer::new(name, LayerContent::Group(photocraft_doc::Group { children: Vec::new(), expanded: true, artboard: None }));
+        let mut l = Layer::new(name, LayerContent::Group(photocraft_doc::Group { children: Vec::new(), expanded: true, artboard: None, frame_stroke: None }));
         l.visible = visible;
         l
     }
@@ -765,7 +765,7 @@ mod tests {
             layer
         };
         // Bottom first: the reference sits on top of the paint.
-        doc.layers = vec![solid("Paint", [1.0, 0.0, 0.0]), solid("ref_photo", [0.0, 0.0, 1.0])];
+        doc.layers = vec![solid("Paint", [1.0, 0.0, 0.0]), solid("ref_photo", [0.0, 0.0, 1.0])].into();
         let shown = photocraft_compose::flatten(&doc).get(4, 4);
         let frame = photocraft_compose::flatten(&frame_document(&doc, "REF_")).get(4, 4);
         assert_ne!(shown, frame, "the reference covers the paint in the document");
@@ -786,7 +786,7 @@ mod tests {
             }
             layer
         };
-        doc.layers = vec![solid("Paint", [1.0, 0.0, 0.0]), solid("Paint 2", [1.0, 0.0, 0.0]), solid("REF_photo", [0.0, 0.0, 1.0])];
+        doc.layers = vec![solid("Paint", [1.0, 0.0, 0.0]), solid("Paint 2", [1.0, 0.0, 0.0]), solid("REF_photo", [0.0, 0.0, 1.0])].into();
         let frame = shrunk(frame_document(&doc, "REF_"), 40).unwrap();
         assert_eq!((frame.size.width, frame.size.height), (40, 10));
         assert_eq!(frame.layers.len(), 1, "flattened");
@@ -801,7 +801,7 @@ mod tests {
     fn only_a_visible_change_makes_a_new_frame() {
         let mut doc = Document::new("t", photocraft_geom::Size::new(8, 8), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
         let fmt = doc.pixel_format();
-        doc.layers = vec![Layer::raster("Paint", fmt), named("REF_photo", true)];
+        doc.layers = vec![Layer::raster("Paint", fmt), named("REF_photo", true)].into();
         let dir = std::env::temp_dir().join(format!("photocraft-timelapse-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(frame_name(1));
