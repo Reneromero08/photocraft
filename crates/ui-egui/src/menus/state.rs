@@ -5,6 +5,10 @@ use super::invoke::{panel_alias, proof_preset, workspace_id};
 use super::{DOCUMENT_ITEM, PhotocraftApp, Value};
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::timelapse::handles(id) {
+        return true;
+    }
     // Shortcut-only: the tool host owns presses during a gesture.
     if id == "layer.selectUnderCursor" {
         return app.session.active().is_some() && !app.brush_resize.active();
@@ -143,6 +147,10 @@ fn panel_of(id: &str) -> Option<&str> {
 
 /// Is a UI-level toggle currently on (for checkmarks)?
 pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(c) = crate::timelapse::checked(app, id) {
+        return Some(c);
+    }
     use photocraft_doc::{ColorMode, SampleType};
     if let Some(c) = crate::view_cmds::checked(app, id) {
         return Some(c);

@@ -34,6 +34,7 @@ pub fn is_live(id: &str) -> bool {
         || crate::view_cmds::handles(id)
         || crate::shortcut_dispatch::is_bridged(id)
         || crate::workspace_ui::handles(id)
+        || (cfg!(not(target_arch = "wasm32")) && id == "window.timelapse")
 }
 
 /// Commands outside the catalogue that belong right after a catalogue item: `(id, after)`.

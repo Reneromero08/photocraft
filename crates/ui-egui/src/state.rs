@@ -328,6 +328,10 @@ pub struct UiState {
     #[serde(default)]
     pub analysis: crate::analysis::AnalysisUi,
     pub timeline: crate::timeline_ui::TimelineUi,
+    /// Window › Timelapse recorder (see `timelapse`): runtime only, never saved.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    pub timelapse: crate::timelapse::Timelapse,
     /// Slice and Slice Select tools (see `slice_ui`).
     #[serde(default)]
     pub slices: crate::slice_ui::SliceUi,
@@ -505,6 +509,8 @@ impl Default for UiState {
             font_filters: Default::default(),
             analysis: Default::default(),
             timeline: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            timelapse: Default::default(),
             slices: Default::default(),
             web_table: Default::default(),
             frame_tool: Default::default(),
