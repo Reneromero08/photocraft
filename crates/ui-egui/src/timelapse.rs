@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{RichText, vec2};
+use egui::{Button, DragValue, TextEdit, Window};
 use photocraft_doc::{DocId, Document, Layer, LayerContent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -167,16 +168,16 @@ impl Recorder {
 
     /// Attach to the active document, loading or starting its session folder.
     fn attach(&mut self, app: &PhotocraftApp) -> Result<(), String> {
-        let st = app.session.active().ok_or("No document is open.")?;
+        let st = app.session.active().ok_or_else(|| tl!("No document is open.").to_string())?;
         if self.session.as_ref().is_some_and(|s| s.doc == st.doc.id) {
             return Ok(());
         }
-        let path = st.path.as_deref().ok_or("Save the document first: frames are stored next to its file.")?;
-        let (folder, name) = session_folder(Path::new(path)).ok_or("Could not work out a folder next to the document.")?;
-        std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
+        let path = st.path.as_deref().ok_or_else(|| tl!("Save the document first: frames are stored next to its file.").to_string())?;
+        let (folder, name) = session_folder(Path::new(path)).ok_or_else(|| tl!("Could not work out a folder next to the document.").to_string())?;
+        std::fs::create_dir_all(&folder).map_err(|e| crate::i18n::fmt(tl!("Could not create {folder}: {error}"), &[("folder", &folder.display().to_string()), ("error", &e.to_string())]))?;
         let file = folder.join("session.json");
         let mut state = match std::fs::read_to_string(&file) {
-            Ok(text) => serde_json::from_str::<SessionFile>(&text).map_err(|e| format!("session.json is unreadable ({e}); move it aside to start over."))?,
+            Ok(text) => serde_json::from_str::<SessionFile>(&text).map_err(|e| crate::i18n::fmt(tl!("session.json is unreadable ({error}); move it aside to start over."), &[("error", &e.to_string())]))?,
             Err(_) => SessionFile::fresh(),
         };
         // Never overwrite frames a stale count doesn't know about.
@@ -190,14 +191,18 @@ impl Recorder {
         self.last_frame = None;
         self.last_capture = None;
         self.save()?;
-        self.log(if resumed > 0 { format!("Resumed session: {resumed} frame(s) already captured.") } else { "Started a new timelapse session.".into() });
+        self.log(if resumed > 0 {
+            crate::i18n::fmt(tl!("Resumed session: {count} frame(s) already captured."), &[("count", &resumed.to_string())])
+        } else {
+            tl!("Started a new timelapse session.").to_string()
+        });
         Ok(())
     }
 
     fn save(&self) -> Result<(), String> {
         let Some(s) = &self.session else { return Ok(()) };
         let text = serde_json::to_string_pretty(&s.state).map_err(|e| e.to_string())?;
-        std::fs::write(s.folder.join("session.json"), text).map_err(|e| format!("Could not write session.json: {e}"))
+        std::fs::write(s.folder.join("session.json"), text).map_err(|e| crate::i18n::fmt(tl!("Could not write session.json: {error}"), &[("error", &e.to_string())]))
     }
 
     fn set_recording(&mut self, app: &PhotocraftApp, on: bool) {
@@ -206,16 +211,16 @@ impl Recorder {
         }
         if on {
             if let Err(e) = self.attach(app) {
-                self.log(format!("Cannot start: {e}"));
+                self.log(crate::i18n::fmt(tl!("Cannot start: {error}"), &[("error", &e)]));
                 return;
             }
             self.recording = true;
             // The first frame shows where the session (re)starts.
             self.pending_capture = true;
-            self.log("Recording started.");
+            self.log(tl!("Recording started."));
         } else {
             self.recording = false;
-            self.log("Recording stopped.");
+            self.log(tl!("Recording stopped."));
         }
     }
 
@@ -238,12 +243,12 @@ impl Recorder {
                             if let Err(e) = self.save() {
                                 self.log(e);
                             }
-                            self.log(format!("Captured frame {n}."));
+                            self.log(crate::i18n::fmt(tl!("Captured frame {n}."), &[("n", &n.to_string())]));
                         }
                         Ok(FrameDone::Unchanged) => {
                             // The revision was consumed by the capture; don't trigger it again.
                         }
-                        Err(e) => self.log(format!("Frame {n} failed: {e}")),
+                        Err(e) => self.log(crate::i18n::fmt(tl!("Frame {n} failed: {error}"), &[("n", &n.to_string()), ("error", &e)])),
                     }
                 }
             }
@@ -255,7 +260,7 @@ impl Recorder {
         let Some(st) = app.session.documents().iter().find(|d| d.doc.id == session.doc) else {
             self.recording = false;
             self.session = None;
-            self.log("The recorded document was closed; recording stopped.");
+            self.log(tl!("The recorded document was closed; recording stopped."));
             return;
         };
         let debounce = Duration::from_secs(u64::from(session.state.interval_seconds));
@@ -285,7 +290,7 @@ impl Recorder {
         let repaint = ctx.clone();
         let spawned = std::thread::Builder::new().name("timelapse-frame".into()).spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| capture_frame(&doc, previous.as_deref(), &tag, &path)))
-                .unwrap_or_else(|_| Err("frame worker panicked".into()));
+                .unwrap_or_else(|_| Err(tl!("frame worker panicked").to_string()));
             *shared.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
             repaint.request_repaint();
         });
@@ -293,7 +298,7 @@ impl Recorder {
         self.last_capture = None;
         match spawned {
             Ok(_) => self.capture = Some((n, slot)),
-            Err(e) => self.log(format!("Could not start the frame worker: {e}")),
+            Err(e) => self.log(crate::i18n::fmt(tl!("Could not start the frame worker: {error}"), &[("error", &e.to_string())])),
         }
     }
 
@@ -302,38 +307,39 @@ impl Recorder {
             return;
         }
         let Some(s) = &self.session else {
-            self.log("Start or resume a session first.");
+            self.log(tl!("Start or resume a session first."));
             return;
         };
         let frames = s.state.frame_count;
         if frames < 2 {
-            self.log("Capture at least two frames before exporting.");
+            self.log(tl!("Capture at least two frames before exporting."));
             return;
         }
         let size = app.session.documents().iter().find(|d| d.doc.id == s.doc).map(|d| d.doc.bounds()).map(|b| (b.width().max(1), b.height().max(1)));
         let (w, h) = video_size(size.unwrap_or((VIDEO_MAX_SIDE, VIDEO_MAX_SIDE)));
         let folder = s.folder.clone();
-        let status = Arc::new(Mutex::new(("Rendering the full timelapse…".to_string(), false)));
+        let status = Arc::new(Mutex::new((tl!("Rendering the full timelapse…").to_string(), false)));
         let shared = status.clone();
         let spawned = std::thread::Builder::new().name("timelapse-export".into()).spawn(move || {
             let set = |msg: String, done: bool| *shared.lock().unwrap_or_else(PoisonError::into_inner) = (msg, done);
             for (i, (out, args)) in ffmpeg_jobs(frames, w, h).into_iter().enumerate() {
                 if i == 1 {
-                    set("Rendering the 30-second version…".into(), false);
+                    set(tl!("Rendering the 30-second version…").to_string(), false);
                 }
                 if let Err(e) = run_ffmpeg(&folder, &args) {
-                    set(format!("{out}: {e}"), true);
+                    set(crate::i18n::fmt(tl!("{out}: {error}"), &[("out", out), ("error", &e)]), true);
                     return;
                 }
             }
-            set(format!("Done: full_timelapse.mp4 and sped_up_30s.mp4 in {}", folder.display()), true);
+            let folder_display = folder.display().to_string();
+            set(crate::i18n::fmt(tl!("Done: full_timelapse.mp4 and sped_up_30s.mp4 in {folder}"), &[("folder", &folder_display)]), true);
         });
         match spawned {
             Ok(_) => {
-                self.log(format!("Exporting {frames} frames at {w}×{h}."));
+                self.log(crate::i18n::fmt(tl!("Exporting {frames} frames at {width}×{height}."), &[("frames", &frames.to_string()), ("width", &w.to_string()), ("height", &h.to_string())]));
                 self.export = Some(status);
             }
-            Err(e) => self.log(format!("Could not start the export: {e}")),
+            Err(e) => self.log(crate::i18n::fmt(tl!("Could not start the export: {error}"), &[("error", &e.to_string())])),
         }
     }
 }
@@ -416,7 +422,7 @@ fn shrunk(doc: Document, max_side: u32) -> Result<Document, String> {
         let fit = |v: u32| (f64::from(v) * scale).round().max(1.0);
         session.execute("image.imageSize", json!({"width": fit(w), "height": fit(h), "resample": "bicubic"})).map_err(|e| e.to_string())?;
     }
-    session.active().map(|d| (*d.doc).clone()).ok_or_else(|| "the frame document went missing".into())
+    session.active().map(|d| (*d.doc).clone()).ok_or_else(|| tl!("the frame document went missing").to_string())
 }
 
 /// Whether two frames would look the same: same canvas and identical layers. Selections, guides,
@@ -443,8 +449,8 @@ fn write_frame(frame: &Document, path: &Path) -> Result<u64, String> {
     let bytes = photocraft_io::export(&frame, "jpg", &opts).map_err(|e| e.to_string())?.bytes;
     // Write beside the target and rename, so an interrupted write never leaves a broken frame.
     let tmp = path.with_extension("jpg.part");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))?;
+    std::fs::write(&tmp, &bytes).map_err(|e| crate::i18n::fmt(tl!("write {path}: {error}"), &[("path", &tmp.display().to_string()), ("error", &e.to_string())]))?;
+    std::fs::rename(&tmp, path).map_err(|e| crate::i18n::fmt(tl!("rename to {path}: {error}"), &[("path", &path.display().to_string()), ("error", &e.to_string())]))?;
     Ok(bytes.len() as u64)
 }
 
@@ -486,16 +492,16 @@ fn run_ffmpeg(folder: &Path, args: &[String]) -> Result<(), String> {
     }
     let out = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            "ffmpeg was not found. Install it (Windows: winget install ffmpeg, macOS: brew install ffmpeg) and restart PhotoCraft.".to_string()
+            tl!("ffmpeg was not found. Install it (Windows: winget install ffmpeg, macOS: brew install ffmpeg) and restart PhotoCraft.").to_string()
         } else {
-            format!("could not run ffmpeg: {e}")
+            crate::i18n::fmt(tl!("could not run ffmpeg: {error}"), &[("error", &e.to_string())])
         }
     })?;
     if out.status.success() {
         Ok(())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        Err(format!("ffmpeg failed: {}", err.lines().last().unwrap_or("no output").trim()))
+        Err(crate::i18n::fmt(tl!("ffmpeg failed: {output}"), &[("output", err.lines().last().unwrap_or(tl!("no output")).trim())]))
     }
 }
 
@@ -550,6 +556,62 @@ fn take_pending(r: &mut Recorder, app: &PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
+
+/// Floating panel window; shows the title as a plain heading row and captures the platform's
+/// close. Returns true when the window was closed by the platform this frame.
+fn panel_window(
+    app: &PhotocraftApp,
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    _offset: egui::Vec2,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let _ = app;
+    let response = Window::new(title)
+        .id(egui::Id::new(id))
+        .title_bar(false)
+        .default_width(width)
+        .show(ctx, |ui| add_contents(ui));
+    response.is_none()
+}
+
+/// Title row with a close button; returns true when the user clicked close.
+fn title_row(ui: &mut egui::Ui, title: &str) -> bool {
+    ui.horizontal(|ui| {
+        ui.heading(title);
+        ui.button("×").clicked()
+    })
+    .inner
+}
+
+fn section_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).strong());
+}
+
+fn primary_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+    ui.add_sized([width, 28.0], Button::new(label))
+}
+
+fn secondary_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+    ui.add_sized([width, 26.0], Button::new(label).frame(false))
+}
+
+fn value_field(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+) -> egui::Response {
+    ui.add_sized([width, 26.0], DragValue::new(value).range(range).suffix(suffix))
+}
+
+fn text_field(ui: &mut egui::Ui, id: egui::Id, value: &mut String, placeholder: &str, width: f32, _mono: bool) -> egui::Response {
+    ui.add_sized([width, 26.0], TextEdit::singleline(value).id(id).hint_text(placeholder))
+}
+
 /// Runs the recorder and draws its panel. Called every frame.
 pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let handle = Timelapse::handle(app);
@@ -571,8 +633,8 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut reveal = false;
     let mut settings_changed = false;
     let r = &mut *r;
-    crate::analysis_ui::panel_window(app, ctx, "timelapse", tl!("Timelapse"), vec2(-40.0, 120.0), 280.0, |ui| {
-        close = crate::analysis_ui::title_row(ui, tl!("Timelapse"));
+    let platform_closed = panel_window(app, ctx, "timelapse", tl!("Timelapse"), vec2(-40.0, 120.0), 280.0, |ui| {
+        close = title_row(ui, tl!("Timelapse"));
         let (name, frames, bytes) = r.session.as_ref().map_or((tl!("no session").to_string(), 0, 0), |s| (s.name.clone(), s.state.frame_count, s.bytes));
         let row = |ui: &mut egui::Ui, label: &str, value: String| {
             ui.horizontal(|ui| {
@@ -581,7 +643,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             });
         };
         row(ui, tl!("Document"), name);
-        row(ui, tl!("Frames"), if bytes > 0 { format!("{frames} · {}", human_size(bytes)) } else { frames.to_string() });
+        row(ui, tl!("Frames"), if bytes > 0 { crate::i18n::fmt(tl!("{frames} · {size}"), &[("frames", &frames.to_string()), ("size", &human_size(bytes))]) } else { frames.to_string() });
         let state = if r.capture.is_some() {
             tl!("capturing…")
         } else if r.recording {
@@ -592,24 +654,24 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         row(ui, tl!("State"), state.to_string());
         ui.add_space(6.0);
         let label = if r.recording { tl!("Stop Recording") } else { tl!("Start Recording") };
-        if crate::widgets::primary_button(ui, label, ui.available_width()).clicked() {
+        if primary_button(ui, label, ui.available_width()).clicked() {
             toggle = true;
         }
-        if crate::widgets::secondary_button(ui, tl!("Capture Frame Now"), ui.available_width()).clicked() {
+        if secondary_button(ui, tl!("Capture Frame Now"), ui.available_width()).clicked() {
             capture_now = true;
         }
         ui.add_space(6.0);
-        crate::widgets::section_label(ui, tl!("Min seconds between frames"));
-        if crate::widgets::value_field(ui, &mut r.interval_edit, 0.0..=3600.0, "s", 80.0).changed() {
+        section_label(ui, tl!("Min seconds between frames"));
+        if value_field(ui, &mut r.interval_edit, 0.0..=3600.0, "s", 80.0).changed() {
             settings_changed = true;
         }
-        crate::widgets::section_label(ui, tl!("Reference layer prefix (not recorded)"));
-        if crate::widgets::text_field(ui, egui::Id::new("timelapse-ref-tag"), &mut r.tag_edit, "REF_", ui.available_width(), true).changed() {
+        section_label(ui, tl!("Reference layer prefix (not recorded)"));
+        if text_field(ui, egui::Id::new("timelapse-ref-tag"), &mut r.tag_edit, "REF_", ui.available_width(), true).changed() {
             settings_changed = true;
         }
         ui.add_space(6.0);
         ui.add_enabled_ui(!exporting && frames >= 2, |ui| {
-            if crate::widgets::secondary_button(ui, tl!("Export Video (MP4 + 30 s)"), ui.available_width()).clicked() {
+            if secondary_button(ui, tl!("Export Video (MP4 + 30 s)"), ui.available_width()).clicked() {
                 export = true;
             }
         });
@@ -618,7 +680,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.label(RichText::new(msg).color(t.text_dim).size(11.0));
         }
         ui.add_enabled_ui(r.session.is_some(), |ui| {
-            if crate::widgets::secondary_button(ui, tl!("Open Frames Folder"), ui.available_width()).clicked() {
+            if secondary_button(ui, tl!("Open Frames Folder"), ui.available_width()).clicked() {
                 reveal = true;
             }
         });
@@ -629,7 +691,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
         });
     });
-    if close {
+    if close || platform_closed {
         r.open = false;
     }
     if settings_changed {
@@ -650,7 +712,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if capture_now {
         match r.attach(app) {
             Ok(()) => r.pending_capture = true,
-            Err(e) => r.log(format!("Cannot capture: {e}")),
+            Err(e) => r.log(crate::i18n::fmt(tl!("Cannot capture: {error}"), &[("error", &e)])),
         }
     }
     take_pending(r, app, ctx);
@@ -661,7 +723,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let folder = s.folder.to_string_lossy().into_owned();
         let opened = app.services.open_url.as_ref().map(|open| open(&folder));
         if let Some(Err(e)) = opened {
-            r.log(format!("Could not open the folder: {e}"));
+            r.log(crate::i18n::fmt(tl!("Could not open the folder: {error}"), &[("error", &e)]));
         }
     }
 }
